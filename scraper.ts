@@ -115,20 +115,273 @@ function getArea(rectangle: Rectangle) {
     return rectangle.width * rectangle.height;
 }
 
-// Formats (and corrects) an address.
+// Constructs the full address string based on the specified address components.
 
-function formatAddress(address: string) {
-    address = address.trim();
-    if (address.startsWith("LOT:"))
-        return "";
-    else if (address.startsWith("No Residential Address"))
-        return "";
-    else if (/^\d,\d\d\d/.test(address))
-        return address.substring(0, 1) + address.substring(2);  // remove the comma
-    else if (/^\d\d,\d\d\d/.test(address))
-        return address.substring(0, 2) + address.substring(3);  // remove the comma
-    else
-        return address;
+function formatAddress(houseNumber: string, streetName: string, suburbName: string) {
+    suburbName = suburbName.replace(/^HD /, "").replace(/ HD$/, "").replace(/ SA$/, "").trim();
+    suburbName = SuburbNames[suburbName] || suburbName;
+    let separator = ((houseNumber !== "" || streetName !== "") && suburbName !== "") ? ", " : "";
+    return `${houseNumber} ${streetName}${separator}${suburbName}`.trim().replace(/\s\s+/g, " ").toUpperCase();
+}
+
+// Parses the address from the house number, street name and suburb name.  Note that these
+// address components may actually contain multiple addresses (delimited by "ü" characters).
+
+function parseAddress(houseNumber: string, streetName: string, suburbName: string) {
+    // Two or more addresses are sometimes recorded in the same field.  This is done in a way
+    // which is ambiguous (ie. it is not possible to reconstruct the original addresses perfectly).
+    //
+    // For example, the following address:
+    //
+    //     House Number: ü35
+    //           Street: RAILWAYüSCHOOL TCE SOUTHüTERRA
+    //           Suburb: PASKEVILLEüPASKEVILLE
+    //
+    // should be interpreted as the following two addresses:
+    //
+    //     RAILWAY TCE SOUTH, PASKEVILLE
+    //     35 SCHOOL TERRA(CE), PASKEVILLE
+    //
+    // whereas the following address:
+    //
+    //     House Number: 79ü4
+    //           Street: ROSSLYNüSWIFT WINGS ROADüROAD
+    //           Suburb: WALLAROOüWALLAROO
+    //
+    // should be interpreted as the following two addresses:
+    //
+    //     79 ROSSLYN ROAD, WALLAROO
+    //     4 SWIFT WINGS ROAD, WALLAROO
+    //
+    // And so notice that in the first case above the "TCE" text of the Street belonged to the
+    // first address.  Whereas in the second case above the "WINGS" text of the Street belonged
+    // to the second address (this was deduced by examining actual existing street names).
+
+    if (!houseNumber.includes("ü"))
+        return formatAddress(houseNumber, streetName, suburbName);
+
+    // Split the house number on the "ü" character.
+
+    let houseNumberTokens = houseNumber.split("ü");
+
+    // Split the suburb name on the "ü" character.
+
+    let suburbNameTokens = suburbName.split("ü");
+
+    // The street name will have twice as many "ü" characters as the house number.  Each street
+    // name is broken in two and the resulting strings are joined into two groups (delimited
+    // by "ü" within the groups).  A single space is used to join the two groups together.
+    //
+    // For example, the street names "WALLACE STREET" and "MAY TERRACE" are broken in two as
+    // "WALLACE" and "STREET"; and "MAY" and "TERRACE".  And then joined back together into
+    // two groups, "WALLACEüMAY" and "STREETüTERRACE".  Those two groups are then concatenated
+    // together using a single intervening space to form "WALLACEüMAY STREETüTERRACE".
+    //
+    // Unfortunately, the street name is truncated at 30 characters so some of the "ü" characters
+    // may be missing.  Also note that there is an ambiguity in some cases as to whether a space
+    // is a delimiter or is just a space that happens to occur within a street name or suffix 
+    // (such as "Kybunga Top" in "Kybunga Top Road" or "TERRACE SOUTH" in "RAILWAY TERRACE SOUTH").
+    //
+    // For example,
+    //
+    //     PHILLIPSüHARBISON ROADüROAD     <-- street names broken in two and joined into groups
+    //     BarrüFrances StreetüTerrace     <-- street names broken in two and joined into groups
+    //     GOYDERüGOYDERüMail HDüHDüRoad   <-- street names broken in two and joined into groups
+    //     ORIENTALüWINDJAMMER COURTüCOUR  <-- truncated street suffix
+    //     TAYLORüTAYLORüTAYLOR STREETüST  <-- missing "ü" character due to truncation
+    //     EDGARüEASTüEAST STREETüTERRACE  <-- missing "ü" character due to truncation
+    //     SOUTH WESTüSOUTH WEST TERRACEü  <-- missing "ü" character due to truncation
+    //     ChristopherüChristopher Street  <-- missing "ü" character due to truncation
+    //     PORT WAKEFIELDüPORT WAKEFIELD   <-- missing "ü" character due to truncation
+    //     KENNETT STREETüKENNETT STREET   <-- missing "ü" character due to truncation (the missing text is probably " SOUTHüSOUTH")
+    //     NORTH WESTüNORTH WESTüNORTH WE  <-- missing "ü" characters due to truncation
+    //     RAILWAYüSCHOOL TCE SOUTHüTERRA  <-- ambiguous space delimiter
+    //     BLYTHüWHITE WELL HDüROAD        <-- ambiguous space delimiter
+    //     Kybunga TopüKybunga Top RoadüR  <-- ambiguous space delimiter
+    //     SOUTHüSOUTH TERRACE EASTüTERRA  <-- ambiguous space delimiter
+
+    // Artificially increase the street name tokens to twice the length (minus one) of the house
+    // number tokens (this then simplifies the following processing).  The "minus one" is because
+    // the middle token will be split in two later.
+
+    let streetNameTokens = streetName.split("ü");
+    while (streetNameTokens.length < 2 * houseNumberTokens.length - 1)
+        streetNameTokens.push("");
+
+    // Consider the following street name (however, realistically this would be truncated at
+    // 30 characters; this is ignored for the sake of explaining the parsing),
+    //
+    //     Kybunga TopüSmithüRailway South RoadüTerrace EastüTerrace
+    //
+    // This street name would be split into the following tokens,
+    //
+    //     Token 0: Kybunga Top
+    //     Token 1: Smith
+    //     Token 2: Railway South Road  <-- the middle token contains a delimiting space (it is ambiguous as to which space is the correct delimiter)
+    //     Token 3: Terrace East
+    //     Token 4: Terrace
+    //
+    // And from these tokens, the following candidate sets of tokens would be constructed (each
+    // broken into two groups).  Note that the middle token [Railway South Road] is broken into
+    // two tokens in different ways depending on which space is chosen as the delimiter for the
+    // groups: [Railway] and [South Road] or [Railway South] and [Road].
+    //
+    //     Candidate 1: [Kybunga Top] [Smith] [Railway]   [South Road] [Terrace East] [Terrace]
+    //                 └───────────╴Group 1╶───────────┘ └──────────────╴Group 2╶──────────────┘
+    //
+    //     Candidate 2: [Kybunga Top] [Smith] [Railway South]   [Road] [Terrace East] [Terrace]
+    //                 └──────────────╴Group 1╶──────────────┘ └───────────╴Group 2╶───────────┘
+
+    let candidates = [];
+
+    let middleTokenIndex = houseNumberTokens.length - 1;
+    if (!streetNameTokens[middleTokenIndex].includes(" "))  // the space may be missing if the street name is truncated at 30 characters
+        streetNameTokens[middleTokenIndex] += " ";  // artificially add a space to simplify the processing
+
+    let ambiguousTokens = streetNameTokens[middleTokenIndex].split(" ");
+    for (let index = 1; index < ambiguousTokens.length; index++) {
+        let group1 = [ ...streetNameTokens.slice(0, middleTokenIndex), ambiguousTokens.slice(0, index).join(" ")];
+        let group2 = [ ambiguousTokens.slice(index).join(" "), ...streetNameTokens.slice(middleTokenIndex + 1)];
+        candidates.push({ group1: group1, group2: group2, hasInvalidHundredName: false });
+    }
+
+    // Full street names (with suffixes) can now be constructed for each candidate (by joining
+    // together corresponding tokens from each group of tokens).
+
+    let addresses = [];
+    for (let candidate of candidates) {
+        for (let index = 0; index < houseNumberTokens.length; index++) {
+            // Expand street suffixes such as "Tce" to "TERRACE".
+
+            let streetSuffix = candidate.group2[index].split(" ")
+                .map(token => (StreetSuffixes[token.toUpperCase()] === undefined) ? token : StreetSuffixes[token.toUpperCase()])
+                .join(" ");
+
+            // Construct the full street name (including the street suffix).
+
+            let houseNumber = houseNumberTokens[index];
+            let streetName = (candidate.group1[index] + " " + streetSuffix).trim().replace(/\s\s+/g, " ");
+            if (streetName === "")
+                continue;  // ignore blank street names
+
+            // Check whether the street name is actually a hundred name such as "BARUNGA HD".
+
+            if (streetName.endsWith(" HD")) { // very likely a hundred name
+                let hundredNameMatch = didYouMean(streetName.slice(0, -3), HundredNames, { caseSensitive: false, returnType: didyoumean.ReturnTypeEnums.FIRST_CLOSEST_MATCH, thresholdType: didyoumean.ThresholdTypeEnums.EDIT_DISTANCE, threshold: 0, trimSpaces: true });
+                if (hundredNameMatch === null)
+                    candidate.hasInvalidHundredName = true;  // remember that there is an invalid hundred name (for example, "BARUNGA View HD")
+                continue;  // ignore all hundred names names
+            }
+
+            // Determine the associated suburb name.
+
+            let associatedSuburbName = suburbNameTokens[index];
+            if (associatedSuburbName === undefined)
+                associatedSuburbName = "";
+
+            // Choose the best matching street name (from the known street names).
+
+            let streetNameMatch = didYouMean(streetName, Object.keys(StreetNames), { caseSensitive: false, returnType: didyoumean.ReturnTypeEnums.FIRST_CLOSEST_MATCH, thresholdType: didyoumean.ThresholdTypeEnums.EDIT_DISTANCE, threshold: 0, trimSpaces: true });
+            if (streetNameMatch !== null)
+                addresses.push({ houseNumber: houseNumber, streetName: streetName, suburbName: associatedSuburbName, threshold: 0, candidate: candidate });
+            else {
+                streetNameMatch = didYouMean(streetName, Object.keys(StreetNames), { caseSensitive: false, returnType: didyoumean.ReturnTypeEnums.FIRST_CLOSEST_MATCH, thresholdType: didyoumean.ThresholdTypeEnums.EDIT_DISTANCE, threshold: 1, trimSpaces: true });
+                if (streetNameMatch !== null)
+                    addresses.push({ houseNumber: houseNumber, streetName: streetNameMatch, suburbName: associatedSuburbName, threshold: 1, candidate: candidate });
+                else {
+                    streetNameMatch = didYouMean(streetName, Object.keys(StreetNames), { caseSensitive: false, returnType: didyoumean.ReturnTypeEnums.FIRST_CLOSEST_MATCH, thresholdType: didyoumean.ThresholdTypeEnums.EDIT_DISTANCE, threshold: 2, trimSpaces: true });
+                    if (streetNameMatch !== null)
+                        addresses.push({ houseNumber: houseNumber, streetName: streetNameMatch, suburbName: associatedSuburbName, threshold: 2, candidate: candidate });
+                    else
+                        addresses.push({ houseNumber: houseNumber, streetName: streetName, suburbName: associatedSuburbName, threshold: Number.MAX_VALUE, candidate: candidate });  // unrecognised street name
+                }
+            }
+        }
+    }
+
+    if (addresses.length === 0)
+        return undefined;  // no valid addresses found
+
+    // Sort the addresses so that "better" addresses are moved to the front of the array.
+
+    addresses.sort(addressComparer);
+
+    // Format and return the "best" address.
+
+    let address = addresses[0];
+    return formatAddress(address.houseNumber, address.streetName, address.suburbName);
+}
+    
+// Returns a number indicating which address is "larger" (in this case "larger" means a "worse"
+// address).  This can be used to sort addresses so that "better" addresses, ie. those with a
+// house number and fewer spelling errors appear at the start of an array.
+
+function addressComparer(a, b) {
+    // As long as there are one or two spelling errors then prefer the address with a
+    // house number (even if it has more spelling errors).
+
+    if (a.threshold <= 2 && b.threshold <= 2) {
+        if (a.houseNumber === "" && b.houseNumber !== "")
+            return 1;
+        else if (a.houseNumber !== "" && b.houseNumber === "")
+            return -1;
+    }
+
+    // For larger numbers of spelling errors prefer addresses with fewer spelling errors before
+    // considering the presence of a house number.
+
+    if (a.threshold > b.threshold)
+        return 1;
+    else if (a.threshold < b.threshold)
+        return -1;
+
+    if (a.houseNumber === "" && b.houseNumber !== "")
+        return 1;
+    else if (a.houseNumber !== "" && b.houseNumber === "")
+        return -1;
+
+    // All other things being equal (as tested above), avoid addresses belonging to a candidate
+    // that has an invalid hundred name.  This is because having an invalid hundred name often
+    // means that the wrong delimiting space has been chosen for that candidate (as below where
+    // candidate 0 contains the invalid hundred name, "BARUNGA View HD", and so likely the other
+    // address in that candidate is also wrong, namely, "Lake Road").
+    //
+    // Where there are multiple candidates mark down the candidates that contain street names
+    // ending in " HD" and so likely represent a hundred name, but do not actually contain a
+    // valid hundred name.  For example, the valid street name "Lake View Road" in candidate 1
+    // is the better choice in the following because the hundred name "BARUNGA View HD" in
+    // candidate 0 is invalid.
+    //
+    //     BARUNGAüLake View HDüRoad
+    //
+    // Candidate 0: [BARUNGA] [Lake]   [View HD] [Road]
+    //             └───╴Group 1╶────┘ └───╴Group 2╶────┘
+    //     Resulting street names:
+    //         BARUNGA View HD  <-- invalid hundred name
+    //         Lake Road        <-- valid street name
+    //
+    // Candidate 1: [BARUNGA] [Lake View]   [HD] [Road]
+    //             └──────╴Group 1╶──────┘ └─╴Group 2╶─┘
+    //     Resulting street names:
+    //         BARUNGA HD      <-- valid hundred name 
+    //         Lake View Road  <-- valid street name
+
+    if (a.candidate.hasInvalidHundredName && !b.candidate.hasInvalidHundredName)
+        return 1;
+    else if (!a.candidate.hasInvalidHundredName && b.candidate.hasInvalidHundredName)
+        return -1;
+}
+
+// Constructs bounds based on a left element and an option right element in which text is
+// expected to be found.
+
+function constructBounds(leftElement: Element, rightElement: Element) {
+    return {
+        x: leftElement.x + leftElement.width,
+        y: leftElement.y,
+        width: (rightElement === undefined) ? (leftElement.width * 3) : (rightElement.x - leftElement.x - leftElement.width),
+        height: leftElement.height
+    };
 }
 
 // Parses the details from the elements associated with a single page of the PDF (corresponding
@@ -162,12 +415,7 @@ function parseApplicationElements(elements: Element[], informationUrl: string) {
 
     // Get the application number.
 
-    let applicationNumberBounds: Rectangle = {
-        x: applicationNumberHeadingElement.x + applicationNumberHeadingElement.width,
-        y: applicationNumberHeadingElement.y,
-        width: (fullDevelopmentApprovalHeadingElement === undefined) ? (applicationNumberHeadingElement.width * 2) : (fullDevelopmentApprovalHeadingElement.x - applicationNumberHeadingElement.x - applicationNumberHeadingElement.width),
-        height: applicationNumberHeadingElement.height
-    };
+    let applicationNumberBounds = constructBounds(applicationNumberHeadingElement, fullDevelopmentApprovalHeadingElement);
     let applicationNumberElement = elements.find(element => getPercentageOfElementInRectangle(element, applicationNumberBounds) > 10);
     let applicationNumber = (applicationNumberElement === undefined) ? "" : applicationNumberElement.text.replace(/\s/g, "");
     
@@ -181,42 +429,64 @@ function parseApplicationElements(elements: Element[], informationUrl: string) {
 
     // Get the received date.
 
-    let receivedDateBounds: Rectangle = {
-        x: applicationReceivedHeadingElement.x + applicationReceivedHeadingElement.width,
-        y: applicationReceivedHeadingElement.y,
-        width: (fullDevelopmentApprovalHeadingElement === undefined) ? (applicationReceivedHeadingElement.width * 2) : (fullDevelopmentApprovalHeadingElement.x - applicationReceivedHeadingElement.x - applicationReceivedHeadingElement.width),
-        height: applicationReceivedHeadingElement.height
-    };
+    let receivedDateBounds = constructBounds(applicationReceivedHeadingElement, fullDevelopmentApprovalHeadingElement);
     let receivedDateElement = elements.find(element => getPercentageOfElementInRectangle(element, receivedDateBounds) > 10);
     let receivedDate = moment.invalid();
     if (receivedDateElement !== undefined)
         receivedDate = moment(receivedDateElement.text.trim(), "D/MM/YYYY", true);  // allows the leading zero of the day to be omitted
 
     // Get the description.
-
-    let descriptionBounds: Rectangle = {
-        x: developmentDescriptionHeadingElement.x + developmentDescriptionHeadingElement.width,
-        y: developmentDescriptionHeadingElement.y,
-        width: (fullDevelopmentApprovalHeadingElement === undefined) ? Number.MAX_VALUE : (fullDevelopmentApprovalHeadingElement.x - developmentDescriptionHeadingElement.x - developmentDescriptionHeadingElement.width),
-        height: (relevantAuthorityHeadingElement === undefined) ? (developmentDescriptionHeadingElement.height * 2) : (relevantAuthorityHeadingElement.y - developmentDescriptionHeadingElement.y)
-    };
+    
+    let descriptionBounds = constructBounds(developmentDescriptionHeadingElement, fullDevelopmentApprovalHeadingElement);
+    descriptionBounds.height = (relevantAuthorityHeadingElement === undefined) ? (developmentDescriptionHeadingElement.height * 2) : (relevantAuthorityHeadingElement.y - developmentDescriptionHeadingElement.y);
     let description = elements.filter(element => getPercentageOfElementInRectangle(element, descriptionBounds) > 10).map(element => element.text).join(" ").trim().replace(/\s\s+/g, " ");
 
-    // Get the address and legal description.
+    // Get the legal description.
 
-    let houseNumberBounds: Rectangle = {
-        x: houseNumberHeadingElement.x + houseNumberHeadingElement.width,
-        y: houseNumberHeadingElement.y,
-        width: (fullDevelopmentApprovalHeadingElement === undefined) ? (houseNumberHeadingElement.width * 2) : (fullDevelopmentApprovalHeadingElement.x - houseNumberHeadingElement.x - houseNumberHeadingElement.width),
-        height: houseNumberHeadingElement.height
-    };
-    let houseNumberElement = elements.find(element => getPercentageOfElementInRectangle(element, houseNumberBounds) > 10);
+    let legalElements = [];
+
+    let lotNumberBounds = constructBounds(lotNumberHeadingElement, fullDevelopmentApprovalHeadingElement);
+    let lotNumberElement = elements.find(element => getPercentageOfElementInRectangle(element, lotNumberBounds) > 10);
+    if (lotNumberElement !== undefined && lotNumberElement.text.trim() !== "")
+        legalElements.push(`Lot ${lotNumberElement.text.trim()}`);
+
+    let sectionNumberBounds = constructBounds(sectionNumberHeadingElement, fullDevelopmentApprovalHeadingElement);
+    let sectionNumberElement = elements.find(element => getPercentageOfElementInRectangle(element, sectionNumberBounds) > 10);
+    if (sectionNumberElement !== undefined && sectionNumberElement.text.trim() !== "")
+        legalElements.push(`Section ${sectionNumberElement.text.trim()}`);
+
+    let planIdBounds = constructBounds(planIdHeadingElement, fullDevelopmentApprovalHeadingElement);
+    let planIdElement = elements.find(element => getPercentageOfElementInRectangle(element, planIdBounds) > 10);
+    if (planIdElement !== undefined && planIdElement.text.trim() !== "")
+        legalElements.push(`Plan ${planIdElement.text.trim()}`);
+
+    let titleBounds = constructBounds(titleHeadingElement, fullDevelopmentApprovalHeadingElement);
+    let titleElement = elements.find(element => getPercentageOfElementInRectangle(element, titleBounds) > 10);
+    if (titleElement !== undefined && titleElement.text.trim() !== "")
+        legalElements.push(`Title ${titleElement.text.trim()}`);
+
+    let hundredNameBounds = constructBounds(hundredHeadingElement, fullDevelopmentApprovalHeadingElement);
+    let hundredNameElement = elements.find(element => getPercentageOfElementInRectangle(element, hundredNameBounds) > 10);
+    if (hundredNameElement !== undefined && hundredNameElement.text.trim() !== "")
+        legalElements.push(`Hundred ${hundredNameElement.text.trim()}`);
+        
+    let legalDescription = legalElements.join(", ");
     
-    // Repeat same steps here for all other elements ...
+    // Get the address.
 
-    let address = "";
-    let legalDescription = "";
-    address = formatAddress(address);
+    let houseNumberBounds = constructBounds(houseNumberHeadingElement, fullDevelopmentApprovalHeadingElement);
+    let houseNumberElement = elements.find(element => getPercentageOfElementInRectangle(element, houseNumberBounds) > 10);
+    let houseNumber = (houseNumberElement === undefined) ? "" : houseNumberElement.text;
+
+    let streetNameBounds = constructBounds(propertyStreetHeadingElement, fullDevelopmentApprovalHeadingElement);
+    let streetNameElement = elements.find(element => getPercentageOfElementInRectangle(element, streetNameBounds) > 10);
+    let streetName = (streetNameElement === undefined) ? "" : streetNameElement.text;
+
+    let suburbNameBounds = constructBounds(propertySuburbHeadingElement, fullDevelopmentApprovalHeadingElement);
+    let suburbNameElement = elements.find(element => getPercentageOfElementInRectangle(element, suburbNameBounds) > 10);
+    let suburbName = (suburbNameElement === undefined) ? "" : suburbNameElement.text;
+
+    let address = parseAddress(houseNumber, streetName, suburbName);
 
     if (address === "") {
         let elementSummary = elements.map(element => `[${element.text}]`).join("");
