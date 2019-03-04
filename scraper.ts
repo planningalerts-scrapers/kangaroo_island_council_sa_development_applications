@@ -469,26 +469,25 @@ function parseApplicationElements(elements: Element[], informationUrl: string) {
     let hundredNameElement = elements.find(element => getPercentageOfElementInRectangle(element, hundredNameBounds) > 10);
     if (hundredNameElement !== undefined && hundredNameElement.text.trim() !== "")
         legalElements.push(`Hundred ${hundredNameElement.text.trim()}`);
-        
+
     let legalDescription = legalElements.join(", ");
     
     // Get the address.
 
     let houseNumberBounds = constructBounds(houseNumberHeadingElement, fullDevelopmentApprovalHeadingElement);
     let houseNumberElement = elements.find(element => getPercentageOfElementInRectangle(element, houseNumberBounds) > 10);
-    let houseNumber = (houseNumberElement === undefined) ? "" : houseNumberElement.text;
+    let houseNumber = (houseNumberElement === undefined) ? "" : houseNumberElement.text.trim();
 
     let streetNameBounds = constructBounds(propertyStreetHeadingElement, fullDevelopmentApprovalHeadingElement);
     let streetNameElement = elements.find(element => getPercentageOfElementInRectangle(element, streetNameBounds) > 10);
-    let streetName = (streetNameElement === undefined) ? "" : streetNameElement.text;
+    let streetName = (streetNameElement === undefined) ? "" : streetNameElement.text.trim();
 
     let suburbNameBounds = constructBounds(propertySuburbHeadingElement, fullDevelopmentApprovalHeadingElement);
     let suburbNameElement = elements.find(element => getPercentageOfElementInRectangle(element, suburbNameBounds) > 10);
-    let suburbName = (suburbNameElement === undefined) ? "" : suburbNameElement.text;
+    let suburbName = (suburbNameElement === undefined) ? "" : suburbNameElement.text.trim();
 
     let address = parseAddress(houseNumber, streetName, suburbName);
-
-    if (address === "") {
+    if (address === "" || (houseNumber === "0" && streetName === "0" && suburbName === "0")) {
         let elementSummary = elements.map(element => `[${element.text}]`).join("");
         console.log(`Could not find an address for the current development application.  The development application will be ignored.  Elements: ${elementSummary}`);
         return undefined;
